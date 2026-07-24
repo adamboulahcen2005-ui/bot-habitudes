@@ -14,6 +14,7 @@ Fonctionnalités :
 
 import asyncio
 import logging
+import os
 import sqlite3
 from datetime import datetime, date, timedelta, time as dt_time
 from zoneinfo import ZoneInfo
@@ -37,15 +38,33 @@ from telegram.ext import (
 # ---------------------------------------------------------------------------
 # CONFIGURATION - à personnaliser avant de lancer le bot
 # ---------------------------------------------------------------------------
-BOT_TOKEN = "8010071360:AAEWLgFMK7xQ2ZUlruwKjmTWQ6RivaVFD74"
+# Ces 3 valeurs sont lues depuis des variables d'environnement (jamais écrites
+# en dur dans le code), pour rester sûres même si le dépôt GitHub est partagé.
+#
+# En local, si tu ne veux pas configurer de variables d'environnement, tu peux
+# décommenter et compléter les lignes ci-dessous pour tester rapidement :
+# os.environ["BOT_TOKEN"] = "TON_TOKEN_ICI"
+# os.environ["ADMIN_IDS"] = "123456789"
+
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+if not BOT_TOKEN:
+    raise RuntimeError(
+        "La variable d'environnement BOT_TOKEN est manquante. "
+        "Définis-la avant de lancer le bot (voir README.md)."
+    )
 
 # Liste des identifiants Telegram (numériques) des administrateurs,
 # qui seuls peuvent utiliser /export. Pour connaître ton ID, écris à
-# @userinfobot sur Telegram.
-ADMIN_IDS = [6863295439]
+# @userinfobot sur Telegram. Format attendu : "123456789,987654321"
+ADMIN_IDS = [
+    int(x.strip()) for x in os.environ.get("ADMIN_IDS", "").split(",") if x.strip()
+]
 
 TIMEZONE = ZoneInfo("Africa/Casablanca")
-DB_PATH = "habitudes.db"
+
+# Chemin de la base de données. Sur Railway, on le fera pointer vers un
+# volume persistant (ex: /data/habitudes.db) pour ne jamais perdre les données.
+DB_PATH = os.environ.get("DB_PATH", "habitudes.db")
 HEURE_RAPPEL = dt_time(hour=21, minute=0, tzinfo=TIMEZONE)
 
 logging.basicConfig(
@@ -234,14 +253,17 @@ async def receive_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def aide(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+    is_admin = update.effective_user.id in ADMIN_IDS
+    texte = (
         "الأوامر المتاحة:\n"
         "/start - التسجيل\n"
         "/vote - التصويت اليومي\n"
         "/classement - ترتيب اليوم\n"
         "/classement_semaine - ترتيب الأسبوع\n"
-        + ("/export - تصدير Excel (للمشرفين)\n" if True else "")
     )
+    if is_admin:
+        texte += "/statut - من صوّت ومن لم يصوّت اليوم (مشرف)\n/export - تصدير Excel (مشرف)\n"
+    await update.message.reply_text(texte)
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +452,35 @@ async def classement_semaine(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text("🏆 ترتيب الأسبوع:\n\n" + "\n".join(lignes))
 
 
+async def statut_jour(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("هذا الأمر مخصص للمشرفين فقط.")
+        return
+
+    conn = get_conn()
+    tous = conn.execute("SELECT user_id, name FROM users").fetchall()
+    votants = {
+        row["user_id"]
+        for row in conn.execute(
+            "SELECT user_id FROM responses WHERE date=?", (today_str(),)
+        ).fetchall()
+    }
+    conn.close()
+
+    if not tous:
+        await update.message.reply_text("لا يوجد أي مسجل بعد.")
+        return
+
+    ont_vote = [u["name"] for u in tous if u["user_id"] in votants]
+    n_ont_pas_vote = [u["name"] for u in tous if u["user_id"] not in votants]
+
+    texte = f"📊 حالة اليوم ({today_str()}) — {len(ont_vote)}/{len(tous)} صوّتوا\n\n"
+    texte += "✅ صوّتوا:\n" + ("\n".join(ont_vote) if ont_vote else "لا أحد بعد") + "\n\n"
+    texte += "❌ لم يصوّتوا بعد:\n" + ("\n".join(n_ont_pas_vote) if n_ont_pas_vote else "لا أحد 🎉")
+
+    await update.message.reply_text(texte)
+
+
 # ---------------------------------------------------------------------------
 # EXPORT EXCEL (admins uniquement)
 # ---------------------------------------------------------------------------
@@ -496,6 +547,7 @@ def main():
     app.add_handler(CommandHandler("aide", aide))
     app.add_handler(CommandHandler("classement", classement_jour))
     app.add_handler(CommandHandler("classement_semaine", classement_semaine))
+    app.add_handler(CommandHandler("statut", statut_jour))
     app.add_handler(CommandHandler("export", export_excel))
 
     # Rappel automatique chaque soir à 21h00 (heure Maroc)
