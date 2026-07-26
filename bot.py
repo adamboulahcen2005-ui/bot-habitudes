@@ -544,9 +544,11 @@ async def export_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """SELECT u.name AS Nom, r.date AS Date,
                   r.sobh_pts AS Sobh, r.salawat_pts AS Salawat,
                   r.qiyam_pts AS Qiyam, r.wird_pts AS Wird,
-                  (COALESCE(r.sunan1_pts,0) + COALESCE(r.sunan2_pts,0) +
-                   COALESCE(r.sunan3_pts,0) + COALESCE(r.sunan4_pts,0) +
-                   COALESCE(r.sunan5_pts,0)) AS Sunan,
+                  COALESCE(r.sunan1_pts,0) AS "الحضور بعد الأذان",
+                  COALESCE(r.sunan2_pts,0) AS "تحية المسجد",
+                  COALESCE(r.sunan3_pts,0) AS "ركعتين الظهر والمغرب",
+                  COALESCE(r.sunan4_pts,0) AS "الاذكار بعد الصلوات",
+                  COALESCE(r.sunan5_pts,0) AS "الشفع والوتر",
                   r.total AS Total
            FROM responses r JOIN users u ON u.user_id = r.user_id
            ORDER BY r.date, u.name""",
