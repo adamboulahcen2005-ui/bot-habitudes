@@ -5,7 +5,7 @@ Bot Telegram - Suivi quotidien d'habitudes avec système de points
 Fonctionnalités :
 - Inscription des participants (/start)
 - Rappel automatique chaque soir à 21h00 (heure Maroc) avec bouton pour voter
-- Sondage interactif en 4 étapes : Sobh, Salawat, Qiyam, Wird
+- Sondage interactif en 9 étapes : Sobh, Salawat, Qiyam, Wird, puis 5 habitudes oui/non
 - Anti-doublon : impossible de voter deux fois le même jour
 - Classement du jour (/classement) et de la semaine (/classement_semaine)
 - Export Excel à la demande, réservé aux admins (/export)
@@ -74,7 +74,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # États de la conversation du sondage quotidien
-SOBH, SALAWAT, QIYAM, WIRD = range(4)
+SOBH, SALAWAT, QIYAM, WIRD, SUNAN = range(5)
+
+# Les 5 nouvelles habitudes, votées par oui/non : +5 si oui, -5 si non
+SUNAN_ITEMS = [
+    ("sunan1", "الحضور بعد الأذان مباشرة"),
+    ("sunan2", "اداء ركعتين تحية المسجد"),
+    ("sunan3", "ركعتين بعد الظهر والمغرب"),
+    ("sunan4", "الاذكار بعد الصلوات المفروضة"),
+    ("sunan5", "الشفع والوتر"),
+]
 
 # ---------------------------------------------------------------------------
 # BARÈME DE POINTS (repris exactement de ton modèle)
@@ -147,6 +156,17 @@ def init_db():
         )"""
     )
     conn.commit()
+
+    # Migration rétrocompatible : ajoute les colonnes des 5 nouvelles habitudes
+    # (نوافل) si elles n'existent pas encore, sans toucher aux données existantes.
+    colonnes_existantes = {
+        row[1] for row in conn.execute("PRAGMA table_info(responses)").fetchall()
+    }
+    for item_key, _ in SUNAN_ITEMS:
+        for suffix, col_type in ((f"{item_key}_key", "TEXT"), (f"{item_key}_pts", "INTEGER")):
+            if suffix not in colonnes_existantes:
+                conn.execute(f"ALTER TABLE responses ADD COLUMN {suffix} {col_type}")
+    conn.commit()
     conn.close()
 
 
@@ -165,22 +185,15 @@ def has_voted_today(user_id):
 
 
 def save_response(user_id, data):
-    total = data["sobh_pts"] + data["salawat_pts"] + data["qiyam_pts"] + data["wird_pts"]
+    total = sum(v for k, v in data.items() if k.endswith("_pts"))
+    colonnes = list(data.keys())
+    placeholders = ", ".join(["?"] * (len(colonnes) + 3))
     conn = get_conn()
     conn.execute(
-        """INSERT OR REPLACE INTO responses
-        (user_id, date, sobh_key, sobh_pts, salawat_key, salawat_pts,
-         qiyam_key, qiyam_pts, wird_key, wird_pts, total)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-        (
-            user_id,
-            today_str(),
-            data["sobh_key"], data["sobh_pts"],
-            data["salawat_key"], data["salawat_pts"],
-            data["qiyam_key"], data["qiyam_pts"],
-            data["wird_key"], data["wird_pts"],
-            total,
-        ),
+        f"""INSERT OR REPLACE INTO responses
+        (user_id, date, {', '.join(colonnes)}, total)
+        VALUES ({placeholders})""",
+        [user_id, today_str()] + [data[c] for c in colonnes] + [total],
     )
     conn.commit()
     conn.close()
@@ -213,6 +226,15 @@ def build_menu(step_key):
         for key, (label, pts) in BAREME[step_key].items()
     ]
     return InlineKeyboardMarkup(keyboard)
+
+
+def sunan_menu():
+    return InlineKeyboardMarkup(
+        [[
+            InlineKeyboardButton("✅ نعم (+5)", callback_data="sunan_oui"),
+            InlineKeyboardButton("❌ لا (-5)", callback_data="sunan_non"),
+        ]]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -363,6 +385,34 @@ async def handle_wird(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["reponses"]["wird_key"] = key
     context.user_data["reponses"]["wird_pts"] = pts
 
+    context.user_data["sunan_index"] = 0
+    await query.edit_message_text(
+        f"🌟 {SUNAN_ITEMS[0][1]}",
+        reply_markup=sunan_menu(),
+    )
+    return SUNAN
+
+
+async def handle_sunan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    idx = context.user_data["sunan_index"]
+    item_key, _ = SUNAN_ITEMS[idx]
+    pts = 5 if query.data == "sunan_oui" else -5
+    context.user_data["reponses"][f"{item_key}_key"] = query.data
+    context.user_data["reponses"][f"{item_key}_pts"] = pts
+
+    idx += 1
+    context.user_data["sunan_index"] = idx
+
+    if idx < len(SUNAN_ITEMS):
+        await query.edit_message_text(
+            f"🌟 {SUNAN_ITEMS[idx][1]}",
+            reply_markup=sunan_menu(),
+        )
+        return SUNAN
+
     total = save_response(update.effective_user.id, context.user_data["reponses"])
 
     await query.edit_message_text(
@@ -493,7 +543,11 @@ async def export_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     df = pd.read_sql_query(
         """SELECT u.name AS Nom, r.date AS Date,
                   r.sobh_pts AS Sobh, r.salawat_pts AS Salawat,
-                  r.qiyam_pts AS Qiyam, r.wird_pts AS Wird, r.total AS Total
+                  r.qiyam_pts AS Qiyam, r.wird_pts AS Wird,
+                  (COALESCE(r.sunan1_pts,0) + COALESCE(r.sunan2_pts,0) +
+                   COALESCE(r.sunan3_pts,0) + COALESCE(r.sunan4_pts,0) +
+                   COALESCE(r.sunan5_pts,0)) AS Sunan,
+                  r.total AS Total
            FROM responses r JOIN users u ON u.user_id = r.user_id
            ORDER BY r.date, u.name""",
         conn,
@@ -538,6 +592,7 @@ def main():
             SALAWAT: [CallbackQueryHandler(handle_salawat, pattern="^sal_")],
             QIYAM: [CallbackQueryHandler(handle_qiyam, pattern="^qiyam_")],
             WIRD: [CallbackQueryHandler(handle_wird, pattern="^wird_")],
+            SUNAN: [CallbackQueryHandler(handle_sunan, pattern="^sunan_(oui|non)$")],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
