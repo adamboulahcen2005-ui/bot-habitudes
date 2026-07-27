@@ -84,7 +84,7 @@ SUNAN_ITEMS = [
     ("sunan3", "ركعتين بعد الظهر والمغرب", 5, -5),
     ("sunan4", "الاذكار بعد الصلوات المفروضة", 5, -5),
     ("sunan5", "الشفع والوتر", 5, -5),
-    ("sunan6", "قراءة الكتاب", 10, -10),
+    ("sunan6", "مشاهدة المقطع المرئي", 10, -10),
 ]
 
 # ---------------------------------------------------------------------------
@@ -553,7 +553,7 @@ async def export_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
                   COALESCE(r.sunan3_pts,0) AS "ركعتين الظهر والمغرب",
                   COALESCE(r.sunan4_pts,0) AS "الاذكار بعد الصلوات",
                   COALESCE(r.sunan5_pts,0) AS "الشفع والوتر",
-                  COALESCE(r.sunan6_pts,0) AS "قراءة الكتاب",
+                  COALESCE(r.sunan6_pts,0) AS "مشاهدة المقطع المرئي",
                   r.total AS Total
            FROM responses r JOIN users u ON u.user_id = r.user_id
            ORDER BY r.date, u.name""",
