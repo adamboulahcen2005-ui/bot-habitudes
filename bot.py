@@ -76,13 +76,15 @@ logger = logging.getLogger(__name__)
 # États de la conversation du sondage quotidien
 SOBH, SALAWAT, QIYAM, WIRD, SUNAN = range(5)
 
-# Les 5 nouvelles habitudes, votées par oui/non : +5 si oui, -5 si non
+# Les habitudes votées par oui/non, avec leur barème propre :
+# (clé interne, libellé, points si oui, points si non)
 SUNAN_ITEMS = [
-    ("sunan1", "الحضور بعد الأذان مباشرة"),
-    ("sunan2", "اداء ركعتين تحية المسجد"),
-    ("sunan3", "ركعتين بعد الظهر والمغرب"),
-    ("sunan4", "الاذكار بعد الصلوات المفروضة"),
-    ("sunan5", "الشفع والوتر"),
+    ("sunan1", "الحضور بعد الأذان مباشرة", 5, -5),
+    ("sunan2", "اداء ركعتين تحية المسجد", 5, -5),
+    ("sunan3", "ركعتين بعد الظهر والمغرب", 5, -5),
+    ("sunan4", "الاذكار بعد الصلوات المفروضة", 5, -5),
+    ("sunan5", "الشفع والوتر", 5, -5),
+    ("sunan6", "قراءة الكتاب", 10, -10),
 ]
 
 # ---------------------------------------------------------------------------
@@ -162,7 +164,7 @@ def init_db():
     colonnes_existantes = {
         row[1] for row in conn.execute("PRAGMA table_info(responses)").fetchall()
     }
-    for item_key, _ in SUNAN_ITEMS:
+    for item_key, _label, _pts_oui, _pts_non in SUNAN_ITEMS:
         for suffix, col_type in ((f"{item_key}_key", "TEXT"), (f"{item_key}_pts", "INTEGER")):
             if suffix not in colonnes_existantes:
                 conn.execute(f"ALTER TABLE responses ADD COLUMN {suffix} {col_type}")
@@ -228,11 +230,11 @@ def build_menu(step_key):
     return InlineKeyboardMarkup(keyboard)
 
 
-def sunan_menu():
+def sunan_menu(pts_oui, pts_non):
     return InlineKeyboardMarkup(
         [[
-            InlineKeyboardButton("✅ نعم (+5)", callback_data="sunan_oui"),
-            InlineKeyboardButton("❌ لا (-5)", callback_data="sunan_non"),
+            InlineKeyboardButton(f"✅ نعم (+{pts_oui})", callback_data="sunan_oui"),
+            InlineKeyboardButton(f"❌ لا ({pts_non})", callback_data="sunan_non"),
         ]]
     )
 
@@ -386,9 +388,10 @@ async def handle_wird(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["reponses"]["wird_pts"] = pts
 
     context.user_data["sunan_index"] = 0
+    premier = SUNAN_ITEMS[0]
     await query.edit_message_text(
-        f"🌟 {SUNAN_ITEMS[0][1]}",
-        reply_markup=sunan_menu(),
+        f"🌟 {premier[1]}",
+        reply_markup=sunan_menu(premier[2], premier[3]),
     )
     return SUNAN
 
@@ -398,8 +401,8 @@ async def handle_sunan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     idx = context.user_data["sunan_index"]
-    item_key, _ = SUNAN_ITEMS[idx]
-    pts = 5 if query.data == "sunan_oui" else -5
+    item_key, _label, pts_oui, pts_non = SUNAN_ITEMS[idx]
+    pts = pts_oui if query.data == "sunan_oui" else pts_non
     context.user_data["reponses"][f"{item_key}_key"] = query.data
     context.user_data["reponses"][f"{item_key}_pts"] = pts
 
@@ -407,9 +410,10 @@ async def handle_sunan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["sunan_index"] = idx
 
     if idx < len(SUNAN_ITEMS):
+        suivant = SUNAN_ITEMS[idx]
         await query.edit_message_text(
-            f"🌟 {SUNAN_ITEMS[idx][1]}",
-            reply_markup=sunan_menu(),
+            f"🌟 {suivant[1]}",
+            reply_markup=sunan_menu(suivant[2], suivant[3]),
         )
         return SUNAN
 
@@ -549,6 +553,7 @@ async def export_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
                   COALESCE(r.sunan3_pts,0) AS "ركعتين الظهر والمغرب",
                   COALESCE(r.sunan4_pts,0) AS "الاذكار بعد الصلوات",
                   COALESCE(r.sunan5_pts,0) AS "الشفع والوتر",
+                  COALESCE(r.sunan6_pts,0) AS "قراءة الكتاب",
                   r.total AS Total
            FROM responses r JOIN users u ON u.user_id = r.user_id
            ORDER BY r.date, u.name""",
